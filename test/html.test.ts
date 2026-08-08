@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { rewriteHtml } from "../src/rewrite/html.js";
+import { bootstrapSource } from "../src/web/bootstrap-source.js";
 
 const ORIGIN = "https://proxy.example";
 const TARGET = "https://site.example/blog/post";
+const decodeToken = (t: string) => Buffer.from(t, "base64url").toString();
 
 describe("rewriteHtml", () => {
   it("rewrites absolute links and assets to the proxy origin", () => {
@@ -35,6 +37,53 @@ describe("rewriteHtml", () => {
   it("injects the bootstrap shim into head", () => {
     const out = rewriteHtml(`<html><head><title>t</title></head><body></body></html>`, TARGET, ORIGIN);
     expect(out).toContain("data-proxy-bootstrap");
+  });
+
+  it("injects the bootstrap inline and synchronously, carrying origin and base", () => {
+    const out = rewriteHtml(`<html><head><title>t</title></head><body></body></html>`, TARGET, ORIGIN);
+    // The shim is inline (the actual bootstrap source, not a src= reference).
+    expect(out).toContain("window.__proxyBootstrap");
+    expect(out).not.toContain('src="/__bootstrap.js"');
+    // It carries both the proxy origin and the true upstream document URL.
+    expect(out).toContain(`data-origin="${ORIGIN}"`);
+    expect(out).toContain(`data-base="${TARGET}"`);
+    // It must be the first script in <head> so it runs before any upstream script.
+    const headStart = out.slice(0, out.indexOf("<body"));
+    expect(headStart.indexOf("data-proxy-bootstrap")).toBeLessThan(headStart.indexOf("<title>"));
+  });
+
+  it("rewrites inline classic scripts", () => {
+    const html = `<html><head></head><body><script>const u = "https://api.site.example/data"; fetch(u);</script></body></html>`;
+    const out = rewriteHtml(html, TARGET, ORIGIN);
+    expect(out).toContain("fetch(u);");
+    expect(out).toContain("https://proxy.example/");
+    expect(out).not.toContain("https://api.site.example/data");
+    const token = out.match(/proxy\.example\/([A-Za-z0-9_-]+)/)?.[1];
+    expect(decodeToken(token!)).toBe("https://api.site.example/data");
+  });
+
+  it("rewrites inline module scripts (relative import specifiers)", () => {
+    const html = `<html><head></head><body><script type="module">import { x } from "./lib.js"; import("./dyn.js");</script></body></html>`;
+    const out = rewriteHtml(html, TARGET, ORIGIN);
+    const tokens = [...out.matchAll(/proxy\.example\/([A-Za-z0-9_-]+)/g)].map((m) => decodeToken(m[1]!));
+    expect(tokens).toContain("https://site.example/blog/lib.js");
+    expect(tokens).toContain("https://site.example/blog/dyn.js");
+  });
+
+  it("does not rewrite our own bootstrap shim", () => {
+    const html = `<html><head><title>t</title></head><body></body></html>`;
+    const out = rewriteHtml(html, TARGET, ORIGIN);
+    // The inline shim still contains the bootstrap's own relative-style URLs
+    // untouched (e.g. its encodeUrl implementation is not proxied).
+    expect(out).toContain("window.__proxyBootstrap");
+    // No second level: nothing inside the shim got re-encoded against the proxy.
+    expect(bootstrapSource.includes("proxy.example")).toBe(false);
+  });
+
+  it("bootstrap source is safe to inline in text/html", () => {
+    expect(bootstrapSource).not.toMatch(/<\/script/i);
+    expect(bootstrapSource).not.toContain("<!--");
+    expect(bootstrapSource).toContain("window.__proxyBootstrap");
   });
 
   it("rewrites inline style attributes and style blocks", () => {

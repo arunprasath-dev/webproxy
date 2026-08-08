@@ -17,9 +17,19 @@ and **ws**, designed for **scalable multi-node** deployment.
 - **Cookie namespacing** — cookies are scoped to the proxy origin and
   namespaced per target host so browsing multiple sites never collides or leaks.
 - **Client bootstrap** — injected script rewrites dynamic JS (`fetch`, `XHR`,
-  `WebSocket`, `EventSource`, `window.open`, `location.href`) at runtime.
-- **Streaming transports** — SSE, video/large files (byte-range), and WebSocket
-  upgrade bridging.
+  `WebSocket`, `EventSource`, `window.open`, `location.href`, `Worker`,
+  `sendBeacon`, `history.pushState`) at runtime, and patches element URL setters
+  + a MutationObserver so JS-created `img.src`/`srcset`/`form.action` still
+  proxy.
+- **Server-side JS rewriting (Babel)** — ES-module `import`/`export`, dynamic
+  `import()`, `import.meta.url`, and worker `importScripts` in `text/javascript`
+  responses are rewritten so modern JS-heavy sites work.
+- **Streaming transports** — SSE (line-streamed `data:` URL rewrite), video/large
+  files (byte-range/206), and WebSocket upgrade bridging (text/binary opcode
+  preserved, subprotocol negotiation forwarded).
+- **Burst-friendly upstream** — outbound connections are capped per origin
+  (browser-like ~6/host) so loading image-heavy pages doesn't trip upstream edge
+  rate limiters.
 - **Security** — SSRF guard (blocks loopback/private/link-local/cloud-metadata
   IPs, post-DNS), per-IP rate limiting, body limits.
 - **Caching & scaling** — Redis-backed cache (no-op fallback), PM2 cluster,
@@ -36,6 +46,35 @@ npm run typecheck
 ```
 
 Open `http://localhost:3000`, enter a URL, and browse.
+
+### End-to-end testing
+
+A Playwright suite covers the proxy itself plus a controlled local **modern JS
+site fixture** (ES modules, dynamic `import()`, workers, fetch GET/POST,
+EventSource/SSE, WebSocket text+binary, audio/video Range/206, pushState,
+sendBeacon, JS-created images with srcset):
+
+```bash
+npx playwright test                     # fixture + smoke specs (no network)
+npm run test:e2e                        # same, via package script
+```
+
+Real-site spot checks (requires outbound internet; `UPSTREAM_IP_FAMILY=ipv4`
+in this sandbox):
+
+```bash
+ALLOW_PRIVATE_IPS=true UPSTREAM_IP_FAMILY=ipv4 RATE_LIMIT_MAX_REQUESTS=100000 \
+  PROXY_PUBLIC_ORIGIN=http://localhost:3000 npm run dev   # in one shell
+node browse-probe.mjs "https://en.wikipedia.org/wiki/Web_proxy"
+```
+
+`browse-probe.mjs` loads a real article, follows an in-page link, and plays a
+Wikimedia Commons OGG audio file through the proxy, asserting: **zero** direct
+upstream-origin requests (no leaks), **zero** failed requests, **zero** console
+errors, a decodable media element, and ≥1 byte-range (206) response. Note: busy
+CDNs (Wikimedia's Varnish edge) intermittently return HTTP 429 on the *site's
+own* ~50-thumbnail burst from a single IP — this is upstream throttling
+(`retry-after: 1`), not a proxy defect, and is reported separately by the probe.
 
 ## Deploy (Docker)
 
@@ -64,7 +103,11 @@ All settings are env-driven (see `.env.example`):
 | `CACHE_TTL_SECONDS` | `300` | Default cache TTL |
 | `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS` | `60000` / `120` | Per-IP rate limiting |
 | `UPSTREAM_IP_FAMILY` | `auto` | Upstream IP family: `auto` \| `ipv4` \| `ipv6`. Set `ipv4` if outbound IPv6 is broken |
-| `MAX_REWRITE_BODY_BYTES` | `5 MiB` | Largest body buffered for rewriting |
+| `MAX_REWRITE_BODY_BYTES` | `5 MiB` | Largest HTML/CSS body buffered for rewriting |
+| `MAX_JS_REWRITE_BYTES` | `16 MiB` | Largest JS body buffered for Babel rewriting (larger streams untouched) |
+| `JS_REWRITE_CACHE_SIZE` | `128` | LRU entries in the rewritten-JS cache |
+| `MAX_BODY_BYTES` | `1 MiB` | Largest request body accepted (upload limit) |
+| `UPSTREAM_MAX_CONCURRENCY_PER_ORIGIN` | `6` | Max outbound connections per upstream origin (browser-like cap) |
 | `PROXY_PUBLIC_ORIGIN` | `http://localhost:3000` | Public origin used when building rewritten URLs |
 
 ## Architecture

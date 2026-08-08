@@ -5,8 +5,8 @@ import { ProxyHandler } from "./proxy/handler.js";
 import { buildCache } from "./cache/index.js";
 import { RateLimiter } from "./security/rateLimit.js";
 import { BOOTSTRAP_PATH } from "./web/constants.js";
+import { bootstrapSource } from "./web/bootstrap-source.js";
 
-const bootstrapSource = readFileSync(new URL("./web/bootstrap.js", import.meta.url), "utf8");
 const homePage = readFileSync(new URL("./web/home.html", import.meta.url), "utf8");
 
 /** Build and wire the Fastify application (no listening). */
@@ -16,9 +16,14 @@ export function buildApp(cfg?: Config): FastifyInstance {
   // limiting works behind the Caddy/Docker reverse proxy (see Caddyfile).
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL ?? "info" },
-    bodyLimit: 1024 * 1024,
+    bodyLimit: config.MAX_BODY_BYTES,
     trustProxy: true,
   });
+  // Accept any request body as a raw Buffer so POST/PUT/PATCH/DELETE bodies can
+  // be forwarded verbatim to the upstream origin. Fastify's default parsers only
+  // handle JSON/form/text, which would drop other content types (e.g. octet-stream).
+  app.removeAllContentTypeParsers();
+  app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
   const proxy = new ProxyHandler(config, buildCache(config));
   app.addHook("onClose", () => proxy.close());
 
@@ -55,8 +60,11 @@ export function buildApp(cfg?: Config): FastifyInstance {
     return reply.type("text/html").header("cache-control", "public, max-age=3600").send(homePage);
   });
 
-  // Proxy catch-all. Query form (e.g. /?q=https://...) also handled here.
-  app.get("/*", async (req, reply) => {
+  // Proxy catch-all for every method so dynamic pages can POST/PUT/PATCH/DELETE
+  // through the proxy. The ?q= query form redirects for GET only; a POST with
+  // ?q= is an upstream request (e.g. a form action), not a navigation.
+  app.all("/*", async (req, reply) => {
+    if (req.method !== "GET") return proxy.handle(req, reply);
     const q = (req.query as Record<string, string> | undefined)?.q;
     if (q) {
       const { normalizeTarget } = await import("./proxy/scheme.js");

@@ -20,4 +20,9 @@ describe("decideCache", () => {
     expect(decideCache("GET", 200, h([["set-cookie", "a=1"]]), "u", 300).cacheable).toBe(false);
     expect(decideCache("POST", 200, h([]), "u", 300).cacheable).toBe(false);
   });
+
+  it("never caches event streams (infinite body would hang buffering)", () => {
+    expect(decideCache("GET", 200, h([["content-type", "text/event-stream"]]), "u", 300).cacheable).toBe(false);
+    expect(decideCache("GET", 200, h([["content-type", "Text/Event-Stream; charset=utf-8"]]), "u", 300).cacheable).toBe(false);
+  });
 });

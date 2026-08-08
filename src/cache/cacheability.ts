@@ -33,6 +33,11 @@ export function decideCache(
   if (status !== 200) return notCacheable();
   if (headers.get("set-cookie")) return notCacheable();
   if (headers.get("content-encoding")) return notCacheable(); // would need re-encoding on serve
+  // Event streams are infinite; buffering them would hang the response forever
+  // (headers never reach the client). Never cache, never buffer.
+  if ((headers.get("content-type") ?? "").toLowerCase().startsWith("text/event-stream")) {
+    return notCacheable();
+  }
 
   const cc = (headers.get("cache-control") ?? "").toLowerCase();
   if (/\bno-store\b|\bno-cache\b/.test(cc)) return notCacheable();

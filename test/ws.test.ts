@@ -15,9 +15,14 @@ describe("websocket proxy", () => {
     process.env.ALLOW_PRIVATE_IPS = "true";
     process.env.PROXY_PUBLIC_ORIGIN = "http://127.0.0.1:0";
 
-    echo = new WebSocketServer({ port: 0 });
+    echo = new WebSocketServer({
+      port: 0,
+      // Accept the first requested subprotocol so the forwarding is observable.
+      handleProtocols: (protocols) => protocols.values().next().value ?? false,
+    });
     echo.on("connection", (ws) => {
-      ws.on("message", (data) => ws.send(data)); // echo
+      // Echo preserving the frame opcode (text stays text, binary stays binary).
+      ws.on("message", (data, isBinary) => ws.send(data, { binary: isBinary }));
     });
     await new Promise((r) => echo.on("listening", r));
     echoPort = (echo.address() as { port: number }).port;
@@ -46,6 +51,45 @@ describe("websocket proxy", () => {
     await new Promise((r) => ws.on("open", r));
     ws.send("hello-proxy");
     expect(await reply).toBe("hello-proxy");
+    ws.close();
+  });
+
+  it("preserves text vs binary opcodes in both directions", async () => {
+    const target = `http://127.0.0.1:${echoPort}/`;
+    const proxyWsUrl = `ws://127.0.0.1:${proxyPort}/${encodeTarget(target)}`;
+
+    const ws = new WebSocket(proxyWsUrl);
+    const seen: { data: unknown; isBinary: boolean }[] = [];
+    ws.on("message", (data, isBinary) => seen.push({ data, isBinary }));
+    await new Promise((r) => ws.on("open", r));
+    ws.send("text-frame");
+    ws.send(Buffer.from([0x00, 0x01, 0x02]));
+    await new Promise<void>((resolve) => {
+      const iv = setInterval(() => {
+        if (seen.length >= 2) {
+          clearInterval(iv);
+          resolve();
+        }
+      }, 10);
+    });
+    const textMsg = seen[0]!;
+    const binMsg = seen[1]!;
+    expect(textMsg.isBinary).toBe(false);
+    expect(String(textMsg.data)).toBe("text-frame");
+    expect(binMsg.isBinary).toBe(true);
+    expect(Buffer.from(binMsg.data as Uint8Array)).toEqual(Buffer.from([0x00, 0x01, 0x02]));
+    ws.close();
+  });
+
+  it("forwards the requested subprotocol to the upstream", async () => {
+    const target = `http://127.0.0.1:${echoPort}/`;
+    const proxyWsUrl = `ws://127.0.0.1:${proxyPort}/${encodeTarget(target)}`;
+
+    const ws = new WebSocket(proxyWsUrl, ["chat-v1", "chat-v2"]);
+    await new Promise((r) => ws.on("open", r));
+    // The proxy relays the client's protocol list upstream; both legs negotiate
+    // the first offered protocol, so the browser sees it negotiated too.
+    expect(ws.protocol).toBe("chat-v1");
     ws.close();
   });
 });

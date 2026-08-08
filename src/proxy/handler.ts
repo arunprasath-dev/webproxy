@@ -7,6 +7,9 @@ import { validateTarget, SsrfError } from "../security/ssrf.js";
 import { sanitizeResponseHeaders, rewriteLocation } from "../rewrite/headers.js";
 import { rewriteHtml } from "../rewrite/html.js";
 import { rewriteCss } from "../rewrite/css.js";
+import { rewriteJs } from "../rewrite/js.js";
+import { JsRewriteCache } from "../rewrite/js-cache.js";
+import { SseRewriteTransform } from "../rewrite/sse.js";
 import { rewriteCookieHeader, rewriteSetCookie } from "../rewrite/cookies.js";
 import { decideCache } from "../cache/cacheability.js";
 import { NullCache, type Cache } from "../cache/cache.js";
@@ -19,11 +22,13 @@ export class ProxyHandler {
   private readonly cfg: ReturnType<typeof loadConfig>;
   private readonly upstream: UpstreamClient;
   private readonly cache: Cache;
+  private readonly jsCache: JsRewriteCache;
 
   constructor(cfg?: Partial<ReturnType<typeof loadConfig>>, cache?: Cache) {
     this.cfg = { ...loadConfig(), ...cfg };
     this.upstream = new UpstreamClient(this.cfg);
     this.cache = cache ?? new NullCache();
+    this.jsCache = new JsRewriteCache(this.cfg.JS_REWRITE_CACHE_SIZE);
   }
 
   async handle(req: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -52,9 +57,13 @@ export class ProxyHandler {
 
     let upstreamRes;
     try {
+      const body = req.body as Buffer | undefined;
+      const hasBody =
+        req.method !== "GET" && req.method !== "HEAD" && Buffer.isBuffer(body) && body.length > 0;
       upstreamRes = await this.upstream.fetch(target, {
         method: req.method,
         headers: this.buildOutboundHeaders(req, target),
+        ...(hasBody ? { body } : {}),
       });
     } catch (err: any) {
       const isTimeout = err?.name === "AbortError";
@@ -76,8 +85,12 @@ export class ProxyHandler {
       return reply.code(upstreamRes.status).send();
     }
 
+    // HEAD: undici returns an empty body, but cancel it so we never stream.
+    if (req.method === "HEAD") await upstreamRes.body?.cancel();
+
     const contentType = upstreamRes.headers.get("content-type") ?? "";
     const rewritten = this.shouldRewrite(contentType);
+    const isSse = contentType.toLowerCase().startsWith("text/event-stream");
     const targetHost = new URL(target).host;
 
     const cacheDecision = decideCache(req.method, upstreamRes.status, upstreamRes.headers, target, this.cfg.CACHE_TTL_SECONDS);
@@ -106,6 +119,17 @@ export class ProxyHandler {
     }
 
     if (!upstreamRes.body) return reply.send();
+
+    // SSE: stream through the line-rewriter. Must run before the cacheable path
+    // (event streams are never cacheable, but be explicit) and before generic
+    // buffered rewriting — a long-lived stream must never be fully buffered.
+    if (isSse) {
+      return reply.send(
+        Readable.fromWeb(upstreamRes.body as any).pipe(
+          new SseRewriteTransform(target, this.cfg.PROXY_PUBLIC_ORIGIN),
+        ),
+      );
+    }
 
     if (cacheDecision.cacheable) {
       // Buffer, rewrite, and store so subsequent requests hit the cache.
@@ -143,7 +167,7 @@ export class ProxyHandler {
     for (const [k, v] of Object.entries(req.headers)) {
       const lower = k.toLowerCase();
       if (
-        ["host", "connection", "content-length", "accept-encoding", "transfer-encoding"].includes(lower) ||
+        ["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "expect"].includes(lower) ||
         v === undefined
       ) {
         continue;
@@ -162,8 +186,16 @@ export class ProxyHandler {
   }
 
   private shouldRewrite(contentType: string): boolean {
+    return this.rewriteKind(contentType) !== null;
+  }
+
+  /** Pick the rewriter for a content type; null streams bytes untouched. */
+  private rewriteKind(contentType: string): "html" | "css" | "js" | null {
     const t = contentType.toLowerCase();
-    return t.includes("text/html") || t.includes("application/xhtml+xml") || t.includes("text/css");
+    if (t.includes("text/html") || t.includes("application/xhtml+xml")) return "html";
+    if (t.includes("text/css")) return "css";
+    if (t.includes("javascript") || t.includes("ecmascript")) return "js";
+    return null;
   }
 
   /**
@@ -178,7 +210,8 @@ export class ProxyHandler {
     body: ReadableStream,
     out: PassThrough,
   ): Promise<void> {
-    const isHtml = contentType.toLowerCase().includes("html");
+    const kind = this.rewriteKind(contentType) ?? "html";
+    const limit = kind === "js" ? this.cfg.MAX_JS_REWRITE_BYTES : this.cfg.MAX_REWRITE_BODY_BYTES;
     const node: Readable = Readable.fromWeb(body as any);
 
     const chunks: Buffer[] = [];
@@ -192,7 +225,7 @@ export class ProxyHandler {
       }
       chunks.push(buf);
       size += buf.length;
-      if (size > this.cfg.MAX_REWRITE_BODY_BYTES) oversized = true;
+      if (size > limit) oversized = true;
     }
     if (oversized) {
       out.end(Buffer.concat(chunks));
@@ -200,9 +233,12 @@ export class ProxyHandler {
     }
 
     const full = Buffer.concat(chunks).toString("utf8");
-    const rewritten = isHtml
-      ? rewriteHtml(full, target, this.cfg.PROXY_PUBLIC_ORIGIN)
-      : rewriteCss(full, target, this.cfg.PROXY_PUBLIC_ORIGIN);
+    const rewritten =
+      kind === "js"
+        ? rewriteJs(full, target, this.cfg.PROXY_PUBLIC_ORIGIN, { cache: this.jsCache })
+        : kind === "html"
+          ? rewriteHtml(full, target, this.cfg.PROXY_PUBLIC_ORIGIN)
+          : rewriteCss(full, target, this.cfg.PROXY_PUBLIC_ORIGIN);
     out.write(Buffer.from(rewritten, "utf8"));
   }
 
@@ -214,14 +250,17 @@ export class ProxyHandler {
     return Buffer.concat(chunks);
   }
 
-  /** Apply HTML/CSS rewriting to a buffered body; returns bytes to send. */
+  /** Apply HTML/CSS/JS rewriting to a buffered body; returns bytes to send. */
   private applyRewrite(body: Buffer, contentType: string, rewritten: boolean, target: string): Buffer {
     if (!rewritten) return body;
     const text = body.toString("utf8");
-    const isHtml = contentType.toLowerCase().includes("html");
-    const out = isHtml
-      ? rewriteHtml(text, target, this.cfg.PROXY_PUBLIC_ORIGIN)
-      : rewriteCss(text, target, this.cfg.PROXY_PUBLIC_ORIGIN);
+    const kind = this.rewriteKind(contentType) ?? "html";
+    const out =
+      kind === "js"
+        ? rewriteJs(text, target, this.cfg.PROXY_PUBLIC_ORIGIN, { cache: this.jsCache })
+        : kind === "html"
+          ? rewriteHtml(text, target, this.cfg.PROXY_PUBLIC_ORIGIN)
+          : rewriteCss(text, target, this.cfg.PROXY_PUBLIC_ORIGIN);
     return Buffer.from(out, "utf8");
   }
 
