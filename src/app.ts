@@ -5,6 +5,7 @@ import { ProxyHandler } from "./proxy/handler.js";
 import { BOOTSTRAP_PATH } from "./web/constants.js";
 
 const bootstrapSource = readFileSync(new URL("./web/bootstrap.js", import.meta.url), "utf8");
+const homePage = readFileSync(new URL("./web/home.html", import.meta.url), "utf8");
 
 /** Build and wire the Fastify application (no listening). */
 export function buildApp(cfg?: Config): FastifyInstance {
@@ -19,11 +20,17 @@ export function buildApp(cfg?: Config): FastifyInstance {
     reply.type("application/javascript").header("cache-control", "public, max-age=3600").send(bootstrapSource),
   );
 
-  // Homepage (Phase 6 replaces this with the real frontend).
-  app.get("/", async (_req, reply) => {
-    return reply
-      .type("text/html")
-      .send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Web Proxy</title></head><body><h1>Web Proxy</h1><form method="get"><input name="q" placeholder="https://example.com" size="40" autofocus><button type="submit">Go</button></form></body></html>`);
+  // Homepage frontend. Handles /?q=<url> submissions by redirecting to the
+  // encoded proxy path.
+  app.get("/", async (req, reply) => {
+    const q = (req.query as Record<string, string> | undefined)?.q;
+    if (q) {
+      const { normalizeTarget, encodeTarget } = await import("./proxy/scheme.js");
+      const target = normalizeTarget(q);
+      if (target) return reply.redirect(`/${encodeTarget(target)}`);
+      return reply.type("text/html").send(proxy.errorPage("Invalid URL"));
+    }
+    return reply.type("text/html").header("cache-control", "public, max-age=3600").send(homePage);
   });
 
   // Proxy catch-all. Query form (e.g. /?q=https://...) also handled here.

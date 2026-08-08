@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Proxy</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2d37;
+    --text: #e6e6e6; --muted: #9aa0aa; --accent: #6ea8fe; --accent-2: #5b7cfa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; padding: 1.5rem;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #1a2030 0%, var(--bg) 60%);
+    color: var(--text);
+  }
+  .wrap { width: 100%; max-width: 620px; text-align: center; }
+  .logo { font-size: 2.6rem; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 0.4rem; }
+  .logo span { color: var(--accent); }
+  .tagline { color: var(--muted); margin: 0 0 2rem; font-size: 1.05rem; }
+  form { display: flex; gap: 0.6rem; }
+  input[type="text"] {
+    flex: 1; padding: 0.9rem 1rem; font-size: 1rem; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    outline: none; transition: border-color .15s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  button {
+    padding: 0.9rem 1.5rem; font-size: 1rem; font-weight: 600; color: #fff; border: none;
+    border-radius: 10px; cursor: pointer; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+  button:hover { filter: brightness(1.08); }
+  .hint { color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem; }
+  .history { margin-top: 2.2rem; text-align: left; }
+  .history h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 0.6rem; }
+  .history ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .history li a {
+    display: inline-block; padding: 0.4rem 0.8rem; font-size: 0.85rem; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 999px; text-decoration: none;
+  }
+  .history li a:hover { border-color: var(--accent); }
+  .history .clear { float: right; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.75rem; }
+  @media (max-width: 480px) { .logo { font-size: 2rem; } form { flex-direction: column; } button { width: 100%; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="logo">Web<span>Proxy</span></h1>
+  <p class="tagline">Browse any website privately through our secure proxy</p>
+  <form id="proxy-form">
+    <input type="text" id="url" placeholder="Enter a URL — e.g. example.com" autofocus autocomplete="url" spellcheck="false">
+    <button type="submit">Go</button>
+  </form>
+  <p class="hint">Add <code>http://</code> or <code>https://</code>, or leave it out — we default to https.</p>
+  <div class="history" id="history"></div>
+</div>
+<script>
+  (function () {
+    var KEY = "webproxy:history";
+    var MAX = 6;
+    var input = document.getElementById("url");
+    var form = document.getElementById("proxy-form");
+    var historyEl = document.getElementById("history");
+
+    function normalize(u) {
+      u = (u || "").trim();
+      if (!u) return null;
+      if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(u)) u = "https://" + u;
+      try { return new URL(u).href; } catch (e) { return null; }
+    }
+
+    function loadHistory() {
+      try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) { return []; }
+    }
+    function saveHistory(items) { try { localStorage.setItem(KEY, JSON.stringify(items)); } catch (e) {} }
+
+    function renderHistory() {
+      var items = loadHistory();
+      if (!items.length) { historyEl.innerHTML = ""; return; }
+      var lis = items.map(function (h) { return "<li><a href=\"/\" data-u=\"" + encodeURIComponent(h) + "\">" + escapeHtml(host(h)) + "</a></li>"; }).join("");
+      historyEl.innerHTML = "<h2>Recent <button class=\"clear\" type=\"button\" id=\"clear\">Clear</button></h2><ul>" + lis + "</ul>";
+      document.getElementById("clear").addEventListener("click", function () { saveHistory([]); renderHistory(); });
+    }
+
+    function host(h) { try { return new URL(h).host.replace(/^www\./, ""); } catch (e) { return h; } }
+    function escapeHtml(s) { return s.replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+
+    function go(target) {
+      // Server normalizes and redirects /?q=<url> to the encoded proxy path.
+      window.location.href = "/?q=" + encodeURIComponent(target);
+    }
+
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var target = normalize(input.value);
+      if (!target) { input.setCustomValidity("Enter a valid URL"); input.reportValidity(); return; }
+      var items = loadHistory().filter(function (h) { return h !== target; });
+      items.unshift(target);
+      saveHistory(items.slice(0, MAX));
+      go(target);
+    });
+
+    document.addEventListener("click", function (e) {
+      var a = e.target && e.target.closest ? e.target.closest("a[data-u]") : null;
+      if (a) { e.preventDefault(); go(decodeURIComponent(a.getAttribute("data-u"))); }
+    });
+
+    renderHistory();
+  })();
+</script>
+</body>
+</html>
