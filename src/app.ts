@@ -12,7 +12,13 @@ const homePage = readFileSync(new URL("./web/home.html", import.meta.url), "utf8
 /** Build and wire the Fastify application (no listening). */
 export function buildApp(cfg?: Config): FastifyInstance {
   const config = cfg ?? loadConfig();
-  const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: 1024 * 1024 });
+  // trustProxy: read the real client IP from X-Forwarded-For so per-IP rate
+  // limiting works behind the Caddy/Docker reverse proxy (see Caddyfile).
+  const app = Fastify({
+    logger: { level: process.env.LOG_LEVEL ?? "info" },
+    bodyLimit: 1024 * 1024,
+    trustProxy: true,
+  });
   const proxy = new ProxyHandler(config, buildCache(config));
   app.addHook("onClose", () => proxy.close());
 

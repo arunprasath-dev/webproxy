@@ -11,7 +11,16 @@ export class UpstreamClient {
 
   constructor(private readonly cfg: Config) {
     this.agent = new Agent({
-      connect: { timeout: cfg.UPSTREAM_CONNECT_TIMEOUT },
+      connect: {
+        timeout: cfg.UPSTREAM_CONNECT_TIMEOUT,
+        // Force a single IP family when configured (e.g. broken IPv6 egress);
+        // default "auto" lets Node's happy-eyeballs pick between A and AAAA.
+        ...(cfg.UPSTREAM_IP_FAMILY === "ipv4"
+          ? { family: 4 }
+          : cfg.UPSTREAM_IP_FAMILY === "ipv6"
+            ? { family: 6 }
+            : {}),
+      },
       keepAliveTimeout: 30_000,
       keepAliveMaxTimeout: 60_000,
       connections: cfg.KEEP_ALIVE_MAX,
@@ -37,7 +46,9 @@ export class UpstreamClient {
     }
     headers["User-Agent"] =
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36";
-    // We handle compression ourselves so we can rewrite decompressed text.
+    // Ask for compression to save upstream bandwidth. undici's fetch decodes
+    // gzip/deflate/br transparently, so the handler rewrites already-decoded
+    // text; the content-encoding header is stripped on the way out (headers.ts).
     headers["Accept-Encoding"] = "gzip, deflate, br";
 
     return fetch(targetUrl, {

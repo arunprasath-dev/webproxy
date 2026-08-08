@@ -23,6 +23,9 @@ const envSchema = z.object({
   UPSTREAM_REQUEST_TIMEOUT: z.coerce.number().int().positive().default(60000),
   MAX_REWRITE_BODY_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
   KEEP_ALIVE_MAX: z.coerce.number().int().positive().default(64),
+  /** Upstream IP family: auto (happy-eyeballs) | ipv4 | ipv6. Use ipv4 in
+   *  environments with broken IPv6 egress (undici can otherwise stall on AAAA). */
+  UPSTREAM_IP_FAMILY: z.enum(["auto", "ipv4", "ipv6"]).default("auto"),
 
   REDIS_URL: z.string().default("redis://127.0.0.1:6379"),
   CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(300),

@@ -8,6 +8,8 @@
     # WebSocket upgrades must be forwarded.
     reverse_proxy proxy:3000 {
         header_up Host {host}
+        # Overwrite X-Forwarded-For so clients can't spoof the rate-limit key.
+        header_up X-Forwarded-For {remote_host}
         # forward Upgrade/Connection for WebSocket
         flush_interval -1
     }

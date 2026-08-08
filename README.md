@@ -63,6 +63,7 @@ All settings are env-driven (see `.env.example`):
 | `REDIS_URL`, `REDIS_CACHE` | `redis://127.0.0.1:6379`, off | Shared cache for multi-node |
 | `CACHE_TTL_SECONDS` | `300` | Default cache TTL |
 | `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS` | `60000` / `120` | Per-IP rate limiting |
+| `UPSTREAM_IP_FAMILY` | `auto` | Upstream IP family: `auto` \| `ipv4` \| `ipv6`. Set `ipv4` if outbound IPv6 is broken |
 | `MAX_REWRITE_BODY_BYTES` | `5 MiB` | Largest body buffered for rewriting |
 | `PROXY_PUBLIC_ORIGIN` | `http://localhost:3000` | Public origin used when building rewritten URLs |
 

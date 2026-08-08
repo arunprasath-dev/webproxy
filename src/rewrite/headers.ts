@@ -10,6 +10,7 @@ const STRIP = new Set([
   "content-security-policy-report-only",
   "x-frame-options",
   "content-length", // recomputed/chunked because we may rewrite the body
+  "content-encoding", // undici decodes the body; we forward raw bytes
   "x-content-type-options", // re-added by us
   "strict-transport-security", // managed by our TLS terminator
   "alt-svc",
@@ -49,7 +50,7 @@ export function sanitizeResponseHeaders(
       // cookie rewriter; skip both here to avoid duplicate/raw emission.
       continue;
     }
-    if (lower === "content-type" || lower === "content-encoding" || lower === "cache-control" || lower === "etag") {
+    if (lower === "content-type" || lower === "cache-control" || lower === "etag") {
       out[key] = value;
       continue;
     }

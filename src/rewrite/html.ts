@@ -10,7 +10,7 @@ const URL_ATTRS: Record<string, string[]> = {
   link: ["href"],
   script: ["src"],
   img: ["src", "srcset", "data-src", "data-srcset", "data-original"],
-  source: ["src", "srcset", "srcset"], // picture/audio/video sources
+  source: ["src", "srcset"], // picture/audio/video sources
   video: ["src", "poster"],
   audio: ["src"],
   iframe: ["src"],

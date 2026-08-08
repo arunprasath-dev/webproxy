@@ -47,4 +47,29 @@ describe("rewriteHtml", () => {
     expect(decoded).toContain("https://site.example/bg.png");
     expect(decoded).toContain("https://site.example/sprite.png");
   });
+
+  it("rewrites <source> srcset exactly once (no double-encoding)", () => {
+    const html = `<picture><source srcset="/a.png 1x, /b.png 2x"><img src="/a.png"></picture>`;
+    const out = rewriteHtml(html, TARGET, ORIGIN);
+    const tokens = [...out.matchAll(/proxy\.example\/([A-Za-z0-9_-]+)/g)].map((m) => m[1]!);
+    // srcset has 2 candidates + the img src = 3 distinct URLs, each encoded once.
+    expect(tokens).toHaveLength(3);
+    const decoded = tokens.map((t) => Buffer.from(t, "base64url").toString()).sort();
+    expect(decoded).toEqual([
+      "https://site.example/a.png",
+      "https://site.example/a.png",
+      "https://site.example/b.png",
+    ]);
+  });
+
+  it("leaves an already-proxied URL untouched (no re-encode)", () => {
+    const already = `${ORIGIN}/aHR0cHM6Ly9zaXRlLmV4YW1wbGUvc3R5bGUuY3Nz`;
+    const html = `<link rel="stylesheet" href="${already}"><a href="${already}">x</a>`;
+    const out = rewriteHtml(html, TARGET, ORIGIN);
+    expect(out).toContain(already);
+    const tokens = [...out.matchAll(/proxy\.example\/([A-Za-z0-9_-]+)/g)].map((m) => m[1]!);
+    const decoded = tokens.map((t) => Buffer.from(t, "base64url").toString());
+    // No token should itself encode a proxy-origin URL (that would be a second level).
+    expect(decoded.some((d) => d.includes("proxy.example"))).toBe(false);
+  });
 });

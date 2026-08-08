@@ -24,7 +24,10 @@ export function rewriteUrl(raw: string, baseUrl: string, proxyOrigin: string): s
   }
 
   if (resolved.protocol === "http:" || resolved.protocol === "https:") {
-    return `${proxyOrigin.replace(/\/+$/, "")}/${encodeTarget(resolved.toString())}`;
+    const base = proxyOrigin.replace(/\/+$/, "");
+    // Already routed through the proxy — leave it, so we never double-proxy.
+    if (resolved.origin === base) return trimmed;
+    return `${base}/${encodeTarget(resolved.toString())}`;
   }
   return raw;
 }

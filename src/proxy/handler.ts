@@ -1,6 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { PassThrough, Readable, type Transform } from "node:stream";
-import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
+import { PassThrough, Readable } from "node:stream";
 import { loadConfig } from "../config/config.js";
 import { UpstreamClient } from "./upstream.js";
 import { decodeTarget } from "./scheme.js";
@@ -60,6 +59,10 @@ export class ProxyHandler {
     } catch (err: any) {
       const isTimeout = err?.name === "AbortError";
       const status = isTimeout ? 504 : 502;
+      req.log.error(
+        { err: { name: err?.name, message: err?.message, code: err?.code, cause: err?.cause?.message, causeCode: err?.cause?.code } },
+        `upstream fetch failed for ${target}`,
+      );
       return reply.code(status).type("text/html").send(this.errorPage(isTimeout ? "Upstream timed out." : "Upstream unreachable."));
     }
 
@@ -74,7 +77,6 @@ export class ProxyHandler {
     }
 
     const contentType = upstreamRes.headers.get("content-type") ?? "";
-    const contentEncoding = (upstreamRes.headers.get("content-encoding") ?? "").toLowerCase();
     const rewritten = this.shouldRewrite(contentType);
     const targetHost = new URL(target).host;
 
@@ -107,7 +109,7 @@ export class ProxyHandler {
 
     if (cacheDecision.cacheable) {
       // Buffer, rewrite, and store so subsequent requests hit the cache.
-      const body = await this.readBody(contentEncoding, upstreamRes.body);
+      const body = await this.readBody(upstreamRes.body);
       const finalBuffer = this.applyRewrite(body, contentType, rewritten, target);
       const storedHeaders = { ...sanHeaders } as Record<string, string | string[]>;
       delete storedHeaders["content-encoding"];
@@ -122,7 +124,7 @@ export class ProxyHandler {
 
     if (rewritten) {
       const out = new PassThrough();
-      void this.rewriteText(target, contentType, contentEncoding, upstreamRes.body, out)
+      void this.rewriteText(target, contentType, upstreamRes.body, out)
         .then(() => out.end())
         .catch((err) => out.destroy(err as Error));
       return reply.send(out);
@@ -164,30 +166,35 @@ export class ProxyHandler {
     return t.includes("text/html") || t.includes("application/xhtml+xml") || t.includes("text/css");
   }
 
-  /** Decompress, buffer up to a limit, rewrite, and emit the text. */
+  /**
+   * Buffer up to a limit, rewrite, and emit the text. undici's fetch already
+   * decodes gzip/deflate/br, so `body` here is raw (decoded) bytes and we never
+   * re-encode — the content-encoding header is stripped when forwarding (see
+   * headers.ts). Oversized bodies stream through untouched instead of truncating.
+   */
   private async rewriteText(
     target: string,
     contentType: string,
-    contentEncoding: string,
     body: ReadableStream,
     out: PassThrough,
   ): Promise<void> {
     const isHtml = contentType.toLowerCase().includes("html");
-
-    let node: Readable = Readable.fromWeb(body as any);
-    const dec = this.decompressor(contentEncoding);
-    if (dec) node = node.pipe(dec);
+    const node: Readable = Readable.fromWeb(body as any);
 
     const chunks: Buffer[] = [];
     let size = 0;
+    let oversized = false;
     for await (const chunk of node) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (oversized) {
+        out.write(buf);
+        continue;
+      }
       chunks.push(buf);
       size += buf.length;
-      if (size > this.cfg.MAX_REWRITE_BODY_BYTES) break;
+      if (size > this.cfg.MAX_REWRITE_BODY_BYTES) oversized = true;
     }
-    if (size > this.cfg.MAX_REWRITE_BODY_BYTES) {
-      // Too large to buffer for rewriting — fall back to streaming unchanged.
+    if (oversized) {
       out.end(Buffer.concat(chunks));
       return;
     }
@@ -199,24 +206,9 @@ export class ProxyHandler {
     out.write(Buffer.from(rewritten, "utf8"));
   }
 
-  private decompressor(encoding: string): Transform | null {
-    switch (encoding) {
-      case "gzip":
-        return createGunzip();
-      case "deflate":
-        return createInflate();
-      case "br":
-        return createBrotliDecompress();
-      default:
-        return null;
-    }
-  }
-
-  /** Read a full response body (optionally decompressed) into a Buffer. */
-  private async readBody(contentEncoding: string, body: ReadableStream): Promise<Buffer> {
-    let node: Readable = Readable.fromWeb(body as any);
-    const dec = this.decompressor(contentEncoding);
-    if (dec) node = node.pipe(dec);
+  /** Read a full response body (already decoded by undici) into a Buffer. */
+  private async readBody(body: ReadableStream): Promise<Buffer> {
+    const node: Readable = Readable.fromWeb(body as any);
     const chunks: Buffer[] = [];
     for await (const chunk of node) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     return Buffer.concat(chunks);

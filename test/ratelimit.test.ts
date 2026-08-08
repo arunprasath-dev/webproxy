@@ -34,4 +34,18 @@ describe("HTTP 429 hook", () => {
     expect((await real.inject({ method: "GET", url: "/health" })).statusCode).toBe(429);
     await real.close();
   });
+
+  it("keys per real client IP from X-Forwarded-For (trustProxy)", async () => {
+    process.env.RATE_LIMIT_MAX_REQUESTS = "1";
+    process.env.RATE_LIMIT_WINDOW_MS = "60000";
+    const { buildApp } = await import("../src/app.js");
+    const { loadConfig } = await import("../src/config/config.js");
+    const real = buildApp(loadConfig());
+    await real.ready();
+    // Each distinct X-Forwarded-For client gets its own bucket.
+    expect((await real.inject({ method: "GET", url: "/health", headers: { "x-forwarded-for": "1.1.1.1" } })).statusCode).toBe(200);
+    expect((await real.inject({ method: "GET", url: "/health", headers: { "x-forwarded-for": "2.2.2.2" } })).statusCode).toBe(200);
+    expect((await real.inject({ method: "GET", url: "/health", headers: { "x-forwarded-for": "1.1.1.1" } })).statusCode).toBe(429);
+    await real.close();
+  });
 });

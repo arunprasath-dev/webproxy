@@ -54,9 +54,10 @@ URLs at runtime. See `src/proxy/scheme.ts`.
 
 ## Content-encoding & streaming
 
-`Accept-Encoding: gzip, deflate, br` is sent upstream. Rewritten text bodies are
-decompressed, buffered up to `MAX_REWRITE_BODY_BYTES`, rewritten, and
-re-emitted (chunked). Binary and oversized bodies stream untouched with
+`Accept-Encoding: gzip, deflate, br` is sent upstream to save bandwidth. undici's
+`fetch` decodes the body transparently, so rewritten text bodies arrive decoded,
+are buffered up to `MAX_REWRITE_BODY_BYTES`, rewritten, and re-emitted (chunked,
+no `content-encoding`). Binary and oversized bodies stream untouched with
 backpressure. WebSockets, SSE, and byte-range video streaming are handled in
 Phase 7.
 

@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { buildApp } from "../src/app.js";
@@ -31,7 +32,11 @@ describe("integration: proxy pipeline", () => {
     mock.get("/final", async () => "FINAL");
     mock.get("/gzip", async (_req: FastifyRequest, reply: FastifyReply) => {
       const html = `<html><body><a href="/next">Next</a></body></html>`;
-      return reply.type("text/html").header("content-encoding", "identity").send(html);
+      return reply
+        .type("text/html")
+        .header("content-encoding", "gzip")
+        .header("content-length", gzipSync(Buffer.from(html)).length)
+        .send(gzipSync(Buffer.from(html)));
     });
     mock.get("/set-cookie", async (_req: FastifyRequest, reply: FastifyReply) => {
       return reply
@@ -65,6 +70,15 @@ describe("integration: proxy pipeline", () => {
     const res = await app.inject({ method: "GET", url: proxyPath(mockOrigin + "/json") });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ ok: true });
+  });
+
+  it("decodes gzip HTML and rewrites it (no double-decompress)", async () => {
+    const res = await app.inject({ method: "GET", url: proxyPath(mockOrigin + "/gzip") });
+    expect(res.statusCode).toBe(200);
+    // undici decodes the body, so we forward raw bytes without content-encoding.
+    expect(res.headers["content-encoding"]).toBeUndefined();
+    expect(res.body).toContain(PROXY_ORIGIN + "/");
+    expect(res.body).not.toContain("/next");
   });
 
   it("rewrites Location on redirects", async () => {
