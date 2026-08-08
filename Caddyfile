@@ -1,0 +1,22 @@
+# TLS termination and reverse proxy in front of the Node app.
+# Uses {$PROXY_PUBLIC_ORIGIN} as the Host. Replace the site address with your
+# real domain (e.g. proxy.example.com) to get automatic HTTPS from Let's Encrypt.
+
+{$PROXY_PUBLIC_ORIGIN} {
+    encode zstd gzip
+
+    # WebSocket upgrades must be forwarded.
+    reverse_proxy proxy:3000 {
+        header_up Host {host}
+        # Overwrite X-Forwarded-For so clients can't spoof the rate-limit key.
+        header_up X-Forwarded-For {remote_host}
+        # forward Upgrade/Connection for WebSocket
+        flush_interval -1
+    }
+
+    # Security headers on our own responses.
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}

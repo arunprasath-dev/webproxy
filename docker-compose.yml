@@ -1,0 +1,53 @@
+services:
+  proxy:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      PROXY_PUBLIC_ORIGIN: ${PROXY_PUBLIC_ORIGIN:-http://localhost:3000}
+      REDIS_URL: redis://redis:6379
+      REDIS_CACHE: "true"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+      LOG_LEVEL: info
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PROXY_PUBLIC_ORIGIN: ${PROXY_PUBLIC_ORIGIN:-http://localhost:3000}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  redis-data:
+  caddy-data:
+  caddy-config:
