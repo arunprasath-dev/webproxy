@@ -9,6 +9,8 @@ import { sanitizeResponseHeaders, rewriteLocation } from "../rewrite/headers.js"
 import { rewriteHtml } from "../rewrite/html.js";
 import { rewriteCss } from "../rewrite/css.js";
 import { rewriteCookieHeader, rewriteSetCookie } from "../rewrite/cookies.js";
+import { decideCache } from "../cache/cacheability.js";
+import { NullCache, type Cache } from "../cache/cache.js";
 
 /**
  * Core proxy handler: decode target -> SSRF guard -> fetch upstream ->
@@ -17,10 +19,12 @@ import { rewriteCookieHeader, rewriteSetCookie } from "../rewrite/cookies.js";
 export class ProxyHandler {
   private readonly cfg: ReturnType<typeof loadConfig>;
   private readonly upstream: UpstreamClient;
+  private readonly cache: Cache;
 
-  constructor(cfg?: Partial<ReturnType<typeof loadConfig>>) {
+  constructor(cfg?: Partial<ReturnType<typeof loadConfig>>, cache?: Cache) {
     this.cfg = { ...loadConfig(), ...cfg };
     this.upstream = new UpstreamClient(this.cfg);
+    this.cache = cache ?? new NullCache();
   }
 
   async handle(req: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -72,13 +76,24 @@ export class ProxyHandler {
     const contentType = upstreamRes.headers.get("content-type") ?? "";
     const contentEncoding = (upstreamRes.headers.get("content-encoding") ?? "").toLowerCase();
     const rewritten = this.shouldRewrite(contentType);
-
-    reply.code(upstreamRes.status);
     const targetHost = new URL(target).host;
+
+    const cacheDecision = decideCache(req.method, upstreamRes.status, upstreamRes.headers, target, this.cfg.CACHE_TTL_SECONDS);
+    if (cacheDecision.cacheable) {
+      const cached = await this.cache.get(cacheDecision.cacheKey);
+      if (cached) {
+        await upstreamRes.body?.cancel();
+        reply.code(cached.status);
+        for (const [k, v] of Object.entries(cached.headers)) reply.header(k, v as string);
+        return reply.send(cached.body);
+      }
+    }
+
     const sanHeaders = sanitizeResponseHeaders(upstreamRes.headers, {
       rewritten,
       proxyOrigin: this.cfg.PROXY_PUBLIC_ORIGIN,
     });
+    reply.code(upstreamRes.status);
     for (const [k, v] of Object.entries(sanHeaders)) {
       reply.header(k, v as string);
     }
@@ -90,6 +105,21 @@ export class ProxyHandler {
 
     if (!upstreamRes.body) return reply.send();
 
+    if (cacheDecision.cacheable) {
+      // Buffer, rewrite, and store so subsequent requests hit the cache.
+      const body = await this.readBody(contentEncoding, upstreamRes.body);
+      const finalBuffer = this.applyRewrite(body, contentType, rewritten, target);
+      const storedHeaders = { ...sanHeaders } as Record<string, string | string[]>;
+      delete storedHeaders["content-encoding"];
+      delete storedHeaders["content-length"];
+      void this.cache.set(
+        cacheDecision.cacheKey,
+        { status: upstreamRes.status, headers: storedHeaders, body: finalBuffer },
+        cacheDecision.ttlSeconds,
+      );
+      return reply.send(finalBuffer);
+    }
+
     if (rewritten) {
       const out = new PassThrough();
       void this.rewriteText(target, contentType, contentEncoding, upstreamRes.body, out)
@@ -98,6 +128,11 @@ export class ProxyHandler {
       return reply.send(out);
     }
     return reply.send(Readable.fromWeb(upstreamRes.body as any));
+  }
+
+  close(): Promise<void> {
+    this.upstream.close();
+    return this.cache.close();
   }
 
   private buildOutboundHeaders(req: FastifyRequest, target: string): Record<string, string> {
@@ -175,6 +210,27 @@ export class ProxyHandler {
       default:
         return null;
     }
+  }
+
+  /** Read a full response body (optionally decompressed) into a Buffer. */
+  private async readBody(contentEncoding: string, body: ReadableStream): Promise<Buffer> {
+    let node: Readable = Readable.fromWeb(body as any);
+    const dec = this.decompressor(contentEncoding);
+    if (dec) node = node.pipe(dec);
+    const chunks: Buffer[] = [];
+    for await (const chunk of node) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  }
+
+  /** Apply HTML/CSS rewriting to a buffered body; returns bytes to send. */
+  private applyRewrite(body: Buffer, contentType: string, rewritten: boolean, target: string): Buffer {
+    if (!rewritten) return body;
+    const text = body.toString("utf8");
+    const isHtml = contentType.toLowerCase().includes("html");
+    const out = isHtml
+      ? rewriteHtml(text, target, this.cfg.PROXY_PUBLIC_ORIGIN)
+      : rewriteCss(text, target, this.cfg.PROXY_PUBLIC_ORIGIN);
+    return Buffer.from(out, "utf8");
   }
 
   errorPage(message: string): string {
