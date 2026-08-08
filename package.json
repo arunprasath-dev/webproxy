@@ -26,6 +26,7 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.0.0",
     "@types/supertest": "^6.0.0",
     "@types/ws": "^8.5.0",

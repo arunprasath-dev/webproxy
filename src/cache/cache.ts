@@ -1,5 +1,4 @@
 import Redis from "ioredis";
-import type { Config } from "../config/config.js";
 
 export interface CachedResponse {
   status: number;

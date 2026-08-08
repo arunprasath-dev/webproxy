@@ -7,4 +7,6 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   outDir: "dist",
+  // Copy static web assets next to the bundled server so readFileSync(import.meta.url) resolves.
+  onSuccess: "rm -rf dist/web && cp -r src/web dist/web",
 });
