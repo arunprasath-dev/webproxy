@@ -1,6 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { readFileSync } from "node:fs";
 import { loadConfig, type Config } from "./config/config.js";
 import { ProxyHandler } from "./proxy/handler.js";
+import { BOOTSTRAP_PATH } from "./web/constants.js";
+
+const bootstrapSource = readFileSync(new URL("./web/bootstrap.js", import.meta.url), "utf8");
 
 /** Build and wire the Fastify application (no listening). */
 export function buildApp(cfg?: Config): FastifyInstance {
@@ -9,6 +13,11 @@ export function buildApp(cfg?: Config): FastifyInstance {
   const proxy = new ProxyHandler(config);
 
   app.get("/health", async () => ({ status: "ok", ts: Date.now() }));
+
+  // Client bootstrap script (must be registered before the proxy catch-all).
+  app.get(BOOTSTRAP_PATH, async (_req, reply) =>
+    reply.type("application/javascript").header("cache-control", "public, max-age=3600").send(bootstrapSource),
+  );
 
   // Homepage (Phase 6 replaces this with the real frontend).
   app.get("/", async (_req, reply) => {

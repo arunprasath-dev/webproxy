@@ -1,8 +1,12 @@
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config/config.js";
+import { WebSocketProxy } from "./transports/ws.js";
 
 const cfg = loadConfig();
 const app = buildApp();
+
+// WebSocket upgrade proxying.
+new WebSocketProxy().attach(app.server);
 
 const host = cfg.HOST;
 const port = cfg.PORT;

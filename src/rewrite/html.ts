@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import { rewriteSrcset, rewriteUrl } from "./url.js";
 import { rewriteCss } from "./css.js";
+import { BOOTSTRAP_PATH } from "../web/constants.js";
 
 /** URL-bearing attributes per element type. */
 const URL_ATTRS: Record<string, string[]> = {
@@ -102,10 +103,9 @@ function resolveBaseUrl($: cheerio.CheerioAPI, target: string): string {
   return target;
 }
 
-/** Inject our client bootstrap shim into <head>. Replaced by real bootstrap in Phase 5. */
+/** Inject the client bootstrap script into <head>. */
 function injectBootstrap($: cheerio.CheerioAPI, proxyOrigin: string): void {
-  void proxyOrigin;
-  const shim = `<script data-proxy-bootstrap data-origin="${proxyOrigin.replace(/"/g, "&quot;")}"></script>`;
+  const shim = `<script src="${BOOTSTRAP_PATH}" data-proxy-bootstrap data-origin="${proxyOrigin.replace(/"/g, "&quot;")}" async></script>`;
   if ($("head").length) {
     $("head").prepend(shim);
   } else if ($("html").length) {
