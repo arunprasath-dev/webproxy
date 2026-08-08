@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { rewriteSrcset, rewriteUrl } from "./url.js";
+import { rewriteCss } from "./css.js";
 
 /** URL-bearing attributes per element type. */
 const URL_ATTRS: Record<string, string[]> = {
@@ -69,6 +70,18 @@ export function rewriteHtml(html: string, target: string, proxyOrigin: string): 
       const content = $(el).attr("content");
       if (content) $(el).attr("content", rewriteUrl(content, baseUrl, proxyOrigin));
     }
+  });
+
+  // Inline `style` attributes: rewrite url(...) against the document base.
+  $("[style]").each((_, el) => {
+    const style = $(el).attr("style");
+    if (style) $(el).attr("style", rewriteCss(style, baseUrl, proxyOrigin));
+  });
+
+  // <style> blocks: rewrite their CSS content.
+  $("style").each((_, el) => {
+    const css = $(el).html();
+    if (css) $(el).html(rewriteCss(css, baseUrl, proxyOrigin));
   });
 
   injectBootstrap($, proxyOrigin);

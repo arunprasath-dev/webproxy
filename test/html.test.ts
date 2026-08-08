@@ -36,4 +36,15 @@ describe("rewriteHtml", () => {
     const out = rewriteHtml(`<html><head><title>t</title></head><body></body></html>`, TARGET, ORIGIN);
     expect(out).toContain("data-proxy-bootstrap");
   });
+
+  it("rewrites inline style attributes and style blocks", () => {
+    const html = `<div style="background:url(/bg.png)"></div><style>.a{background:url(/sprite.png)}</style>`;
+    const out = rewriteHtml(html, TARGET, ORIGIN);
+    const decoded = [...out.matchAll(/proxy\.example\/([A-Za-z0-9_-]+)/g)].map((m) =>
+      Buffer.from(m[1]!, "base64url").toString(),
+    );
+    // /bg.png and /sprite.png are root-relative -> resolve to the site root.
+    expect(decoded).toContain("https://site.example/bg.png");
+    expect(decoded).toContain("https://site.example/sprite.png");
+  });
 });

@@ -44,8 +44,9 @@ export function sanitizeResponseHeaders(
     const lower = key.toLowerCase();
     if (STRIP.has(lower)) continue;
     if (CORS_NEUTRALIZE.has(lower)) continue;
-    if (lower === "location") {
-      // Handled by the redirect rewriter; skip here to avoid duplicate logic.
+    if (lower === "location" || lower === "set-cookie") {
+      // Location is handled by the redirect rewriter and set-cookie by the
+      // cookie rewriter; skip both here to avoid duplicate/raw emission.
       continue;
     }
     if (lower === "content-type" || lower === "content-encoding" || lower === "cache-control" || lower === "etag") {

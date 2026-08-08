@@ -33,6 +33,12 @@ describe("integration: proxy pipeline", () => {
       const html = `<html><body><a href="/next">Next</a></body></html>`;
       return reply.type("text/html").header("content-encoding", "identity").send(html);
     });
+    mock.get("/set-cookie", async (_req: FastifyRequest, reply: FastifyReply) => {
+      return reply
+        .type("text/html")
+        .header("set-cookie", "session=abc; Domain=127.0.0.1; Path=/")
+        .send("<html><body>c</body></html>");
+    });
     await mock.listen({ port: 0, host: "127.0.0.1" });
     mockOrigin = `http://127.0.0.1:${(mock.server.address() as { port: number }).port}`;
 
@@ -66,6 +72,15 @@ describe("integration: proxy pipeline", () => {
     expect(res.statusCode).toBe(302);
     const loc = res.headers["location"];
     expect(loc).toContain(PROXY_ORIGIN + "/");
+  });
+
+  it("namespaces Set-Cookie from upstream", async () => {
+    const res = await app.inject({ method: "GET", url: proxyPath(mockOrigin + "/set-cookie") });
+    const sc = String(res.headers["set-cookie"]);
+    expect(sc).toMatch(/^c_[a-f0-9]{10}_session=abc/);
+    expect(sc.toLowerCase()).toContain("path=/");
+    expect(sc.toLowerCase()).toContain("samesite=none");
+    expect(sc.toLowerCase()).not.toContain("domain=");
   });
 
   it("serves a healthcheck", async () => {

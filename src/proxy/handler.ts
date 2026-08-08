@@ -1,6 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { PassThrough, Readable, type Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import { loadConfig } from "../config/config.js";
 import { UpstreamClient } from "./upstream.js";
@@ -9,6 +8,7 @@ import { validateTarget, SsrfError } from "../security/ssrf.js";
 import { sanitizeResponseHeaders, rewriteLocation } from "../rewrite/headers.js";
 import { rewriteHtml } from "../rewrite/html.js";
 import { rewriteCss } from "../rewrite/css.js";
+import { rewriteCookieHeader, rewriteSetCookie } from "../rewrite/cookies.js";
 
 /**
  * Core proxy handler: decode target -> SSRF guard -> fetch upstream ->
@@ -74,30 +74,34 @@ export class ProxyHandler {
     const rewritten = this.shouldRewrite(contentType);
 
     reply.code(upstreamRes.status);
-    for (const [k, v] of Object.entries(
-      sanitizeResponseHeaders(upstreamRes.headers, {
-        rewritten,
-        proxyOrigin: this.cfg.PROXY_PUBLIC_ORIGIN,
-      }),
-    )) {
+    const targetHost = new URL(target).host;
+    const sanHeaders = sanitizeResponseHeaders(upstreamRes.headers, {
+      rewritten,
+      proxyOrigin: this.cfg.PROXY_PUBLIC_ORIGIN,
+    });
+    for (const [k, v] of Object.entries(sanHeaders)) {
       reply.header(k, v as string);
+    }
+    // Cookies: rewrite each Set-Cookie to the proxy origin, namespaced per host.
+    const setCookies = upstreamRes.headers.getSetCookie?.() ?? [];
+    for (const sc of setCookies) {
+      if (sc) reply.header("set-cookie", rewriteSetCookie(sc, targetHost));
     }
 
     if (!upstreamRes.body) return reply.send();
 
     if (rewritten) {
       const out = new PassThrough();
-      reply.raw.flushHeaders();
-      void pipeline(out, reply.raw);
-      await this.rewriteText(target, contentType, contentEncoding, upstreamRes.body, out);
-      out.end();
-    } else {
-      const nodeStream = Readable.fromWeb(upstreamRes.body as any);
-      await pipeline(nodeStream, reply.raw);
+      void this.rewriteText(target, contentType, contentEncoding, upstreamRes.body, out)
+        .then(() => out.end())
+        .catch((err) => out.destroy(err as Error));
+      return reply.send(out);
     }
+    return reply.send(Readable.fromWeb(upstreamRes.body as any));
   }
 
   private buildOutboundHeaders(req: FastifyRequest, target: string): Record<string, string> {
+    const targetHost = new URL(target).host;
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
       const lower = k.toLowerCase();
@@ -105,6 +109,13 @@ export class ProxyHandler {
         ["host", "connection", "content-length", "accept-encoding", "transfer-encoding"].includes(lower) ||
         v === undefined
       ) {
+        continue;
+      }
+      if (lower === "cookie") {
+        // Forward only this host's namespaced cookies, un-namespaced.
+        const value = typeof v === "string" ? v : v.join("; ");
+        const rewritten = rewriteCookieHeader(value, targetHost);
+        if (rewritten) headers[k] = rewritten;
         continue;
       }
       headers[k] = typeof v === "string" ? v : v.join(", ");
